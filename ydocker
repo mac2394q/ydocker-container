@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+
+set -e # automatically exit script on error
+
+source .ydocker.conf # load configuration
+
+function showHelp() {
+  echo "
+        ydocker is a script responsible
+        for building and running SAP Hybris Commerce Suite
+        in a Docker container
+
+        Usage:
+          -b    building Docker container
+          -r    running Hybris Server in Docker container
+          -c    running Docker container with CLI
+          -i    showing info about Docker container
+          -u    showing Commerce Suite Download Url
+          -d    deleting Docker container
+          -h    showing help
+        "
+}
+
+function setCommerceSuiteVersionIfNecessary() {
+  if [ "$COMMERCE_SUITE_VERSION" == "latest" ]
+  then
+    COMMERCE_SUITE_VERSION="" # when we leave this variable empty, we'll get the latest suite
+  fi
+}
+
+function setUsernameAndPassword() {
+  echo -n "SAP username (e-mail): "
+  read username
+  echo -n "SAP password: "
+  read -s password
+}
+
+function setCommerceSuiteDownloadUrl {
+  setCommerceSuiteVersionIfNecessary
+  setUsernameAndPassword
+
+  echo $'\ngetting Commerce Suite download url from Artifactory...'
+
+  # get first endpoint for downloading Commerce Suite through Artifactory REST API
+  COMMERCE_SUITE_DOWNLOAD_URL_PREPARATION=`curl -s -u $username:$password \
+  https://repository.hybris.com/api/search/artifact\?name\=commerce-suite-$COMMERCE_SUITE_VERSION\&repos\=hybris-$ARTIFACT_TYPE \
+  | python -mjson.tool | grep zip | tail -1 | awk '{print $2}' | sed -e 's/^"//' -e 's/"$//'`
+
+  # get exact url of Commerce Suite from previously extracted endpoint
+  COMMERCE_SUITE_DOWNLOAD_URL=`curl -s -u $username:$password $COMMERCE_SUITE_DOWNLOAD_URL_PREPARATION \
+  | python -mjson.tool | grep downloadUri | tail -1 | awk '{print $2}' | sed -e 's/^"//' -e 's/"$//' | rev | cut -c 3- | rev`
+}
+
+function showCommerceSuiteDownloadUrl() {
+  setCommerceSuiteDownloadUrl
+  echo $COMMERCE_SUITE_DOWNLOAD_URL
+}
+
+function buildDockerImage() {
+  setCommerceSuiteDownloadUrl
+
+  sudo docker build --build-arg SAP_USERNAME="$username" \
+  --build-arg SAP_PASSWORD="$password" \
+  --build-arg COMMERCE_SUITE_DOWNLOAD_URL="$COMMERCE_SUITE_DOWNLOAD_URL" \
+  --build-arg RECIPE="$RECIPE" \
+  -t "$DOCKER_IMAGE_NAME" .
+}
+
+function runDockerImageServer() {
+  sudo docker run -p 127.0.0.1:"$HOST_PORT":"$CONTAINER_PORT" -t "$DOCKER_IMAGE_NAME"
+}
+
+function runDockerImageCli() {
+  sudo docker run -i -t "$DOCKER_IMAGE_NAME" /bin/bash
+}
+
+function showDockerImageInfo() {
+  sudo docker images | grep "$DOCKER_IMAGE_NAME"
+}
+
+function deleteDockerImage() {
+  sudo docker rmi -f "$DOCKER_IMAGE_NAME"
+}
+
+OPTIND=1 # Reset in case getopts has been used previously in the shell.
+
+while getopts "hbrciud" opt; do
+    case "$opt" in
+    h)
+        showHelp
+        exit 0
+        ;;
+    b)  buildDockerImage
+        ;;
+    r)  runDockerImageServer
+        ;;
+    c)  runDockerImageCli
+        ;;
+    i)  showDockerImageInfo
+        ;;
+    u)  showCommerceSuiteDownloadUrl
+        ;;
+    d)  deleteDockerImage
+        ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+[ "$1" = "--" ] && shift
